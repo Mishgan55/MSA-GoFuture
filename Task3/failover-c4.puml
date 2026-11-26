@@ -1,0 +1,79 @@
+@startuml
+!include https://raw.githubusercontent.com/plantuml-stdlib/C4-PlantUML/master/C4_Container.puml
+
+AddElementTag("new", $bgColor="#FFE6E6", $borderColor="#FF0000", $fontColor="#CC0000")
+
+LAYOUT_TOP_DOWN()
+LAYOUT_WITH_LEGEND()
+
+title C4/C2. Аварийное переключение регионов и основные точки отказа. Новые элементы выделены красным
+
+Person(user, "Пользователь", "Пассажир/водитель")
+Person(sre, "SRE/Дежурная команда", "Управляет инцидентом")
+
+System_Ext(dns, "Route53 DNS", "Latency/geolocation routing + health checks")
+System_Ext(psp, "Локальный PSP", "Платёжный провайдер региона")
+
+System_Boundary(control, "<color:red>NEW</color> Global Control Plane") {
+  Container(incidentCtl, "<color:red>NEW</color> Failover Orchestrator", "Automation + runbooks", "Fencing, traffic shift, validation, controlled failback", $tags="new")
+  Container(homeRegistry, "Home Region Registry", "Control DB", "Домашний регион пользователей/tenant")
+  Container(featureFlags, "Feature Flags/Config", "Config service", "Degraded mode и regional switches")
+}
+
+System_Boundary(primary, "Primary region: Singapore") {
+  Container(sgWaf, "<color:red>NEW</color> WAF/Shield", "AWS WAF + Shield", "Точка отказа F1: edge/DDoS filtering", $tags="new")
+  Container(sgApi, "Regional API Gateway", "ALB/Envoy", "Точка отказа F2: ingress")
+  Container(sgBooking, "Booking Service", "Tier0", "Точка отказа F3: service")
+  ContainerDb(sgDb, "PostgreSQL Primary", "Multi-AZ", "Точка отказа F4: DB writer")
+  ContainerQueue(sgKafka, "Kafka Cluster", "3 AZ", "Точка отказа F5: event backbone")
+  Container(sgRedis, "Redis Hot State", "Cache", "Точка отказа F6: hot state")
+  Container(sgHealth, "Health/Synthetic Checks", "Blackbox + service checks", "Booking/payment/driver journey probes")
+}
+
+System_Boundary(dr, "DR region: Jakarta") {
+  Container(jkWaf, "<color:red>NEW</color> WAF/Shield", "AWS WAF + Shield", "Приём перенаправленного трафика", $tags="new")
+  Container(jkApi, "Regional API Gateway", "ALB/Envoy", "Проверка region affinity и failover mode")
+  Container(jkBooking, "Booking Service", "Tier0 warm standby", "Обслуживает failover writes после promotion")
+  ContainerDb(jkDbReplica, "PostgreSQL Async Replica", "Cross-region replica", "Promote to primary после fencing")
+  ContainerQueue(jkKafka, "Kafka Cluster", "Regional hot path", "Rebuild consumers/state")
+  Container(jkRedis, "Redis Hot State", "Rebuilt cache", "Восстанавливается из snapshots/streams")
+  Container(jkHealth, "Health/Synthetic Checks", "Blackbox + service checks", "Validation перед приёмом writes")
+}
+
+System_Boundary(obs, "Observability/Incident") {
+  Container(prom, "Prometheus/Grafana", "Metrics/SLO", "Обнаружение деградации")
+  Container(alerts, "Alertmanager", "Paging", "Уведомление дежурных")
+}
+
+Rel(user, dns, "1. Запрос api.gofuture.com", "DNS/HTTPS")
+Rel(dns, sgWaf, "2. Нормальный трафик", "healthy endpoint")
+Rel(sgWaf, sgApi, "3. Filtered traffic", "HTTPS")
+Rel(sgApi, sgBooking, "4. Region affinity + booking operations", "mTLS")
+Rel(sgBooking, sgDb, "5. Write active trip state", "SQL")
+Rel(sgBooking, sgKafka, "6. Publish domain events", "Kafka")
+Rel(sgRedis, sgKafka, "Hot state rebuild", "stream replay")
+Rel(sgBooking, psp, "Payment operations", "PSP API")
+
+Rel(sgHealth, sgApi, "Synthetic probes", "HTTPS")
+Rel(jkHealth, jkApi, "Synthetic probes", "HTTPS")
+Rel(prom, sgHealth, "Scrape/check results", "metrics")
+Rel(prom, sgKafka, "Kafka/exporters", "metrics")
+Rel(prom, alerts, "Alert rules", "firing")
+
+Rel(alerts, sre, "7. Page при SLO/region failure", "Incident notification")
+Rel(sre, incidentCtl, "8. Запуск/подтверждение failover", "Runbook approval")
+Rel(incidentCtl, sgApi, "9. Fence writes/maintenance mode", "Control API")
+Rel(incidentCtl, dns, "10. Перевесить/исключить unhealthy endpoint", "Weighted routing")
+Rel(incidentCtl, featureFlags, "11. Включить degraded/failover mode", "Config")
+Rel(incidentCtl, jkDbReplica, "12. Проверить lag и promote replica", "Automation")
+Rel(jkDbReplica, jkBooking, "13. Primary после promotion", "SQL")
+Rel(jkBooking, jkKafka, "14. Resume event processing", "Kafka")
+Rel(jkKafka, jkRedis, "15. Rebuild hot state", "Replay")
+Rel(dns, jkWaf, "16. Новый трафик в DR region", "healthy endpoint")
+Rel(jkWaf, jkApi, "17. Filtered traffic", "HTTPS")
+Rel(jkApi, jkBooking, "18. Failover write path после validation", "mTLS")
+
+Rel(homeRegistry, incidentCtl, "Правила домашних регионов и tenant constraints", "Read")
+Rel(incidentCtl, prom, "Финальная проверка SLO/health после failover", "Validation")
+
+@enduml

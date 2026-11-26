@@ -1,0 +1,122 @@
+@startuml
+!include https://raw.githubusercontent.com/plantuml-stdlib/C4-PlantUML/master/C4_Container.puml
+
+LAYOUT_LEFT_RIGHT()
+LAYOUT_WITH_LEGEND()
+
+title C4. Пайплайн данных из микросервисов в ML-платформу и BI
+
+Person(dataAnalyst, "Аналитик/BI пользователь", "Работает с дашбордами и отчётами")
+Person(mlEngineer, "ML/Data Engineer", "Создаёт признаки, обучает и публикует модели")
+Person(opsUser, "Operations/SRE", "Следит за спросом, качеством и инцидентами")
+
+System_Ext(pspReports, "PSP/Bank settlement reports", "Внешние финансовые отчёты")
+System_Ext(weatherEvents, "Погода/городские события", "Внешние факторы спроса")
+
+System_Boundary(domainServices, "Доменные микросервисы GoFuture") {
+  Container(booking, "Booking Service", "Microservice", "События жизненного цикла заказа")
+  Container(driver, "Driver/Location Services", "Microservices", "Availability, location, acceptance events")
+  Container(pricing, "Pricing Service", "Microservice", "Quotes, тарифы, surge decisions")
+  Container(payments, "Payments Service", "Microservice", "Authorization/capture/refund/payout events")
+  Container(fraud, "Fraud Service", "Microservice", "Risk scores, decisions, cases")
+  Container(notification, "Notification Service", "Microservice", "Delivery outcomes")
+  Container(geography, "Geography Service", "Microservice", "Zones, ETA, geofences")
+}
+
+System_Boundary(eventPlatform, "Event/Data Ingestion") {
+  ContainerQueue(kafka, "Kafka", "Event backbone", "Доменные события, normalized streams, retry/DLQ")
+  Container(schemaRegistry, "Schema Registry", "Avro contracts", "Data contracts и compatibility checks")
+  Container(debezium, "Kafka Connect/Debezium", "CDC/outbox", "Снапшоты reference data и transactional outbox")
+  Container(flinkIngestion, "Flink Ingestion/Validation", "Stream processing", "Validate, deduplicate, mask PII, enrich, quarantine")
+  Container(flinkFeatures, "Flink Realtime Features", "Stream processing", "Supply/demand, velocity features, hot zones")
+  Container(quarantine, "Quarantine/DLQ Storage", "Kafka + object storage", "Невалидные события и причины ошибок")
+}
+
+System_Boundary(dataPlatform, "Data Platform") {
+  ContainerDb(bronze, "Bronze Lakehouse", "S3 + Iceberg/Parquet", "Исходные валидированные события")
+  ContainerDb(silver, "Silver Lakehouse", "S3 + Iceberg/Parquet", "Очищенные и нормализованные данные")
+  ContainerDb(gold, "Gold Marts", "Iceberg/ClickHouse", "Certified бизнес-витрины")
+  ContainerDb(clickhouse, "ClickHouse Realtime Marts", "OLAP", "Оперативные дашборды и BI")
+  Container(featureStore, "Feature Store", "Feast-like", "Offline/online feature definitions, point-in-time joins")
+  ContainerDb(onlineFeatures, "Online Feature Store", "Redis/low-latency store", "Realtime inference features")
+  Container(dataQuality, "Data Quality Engine", "Great Expectations/Deequ-like", "Проверки freshness, volume, nulls, duplicates, drift")
+  Container(catalog, "Data Catalog/Lineage", "DataHub/OpenLineage", "Ownership, classification, lineage, certified datasets")
+  Container(airflow, "Workflow Orchestrator", "Airflow", "Batch ETL, backfills, training pipelines")
+  Container(spark, "Spark Batch Processing", "Compute", "Исторические агрегации, backfill, feature generation")
+}
+
+System_Boundary(mlPlatform, "ML Platform") {
+  Container(mlflow, "MLflow/Model Registry", "Experiment tracking", "Эксперименты, метрики, версии моделей")
+  Container(training, "Model Training Jobs", "Spark/Python", "Pricing, demand forecast, fraud, allocation models")
+  Container(modelServing, "Model Serving", "KServe-like/services", "Online inference для realtime решений")
+  Container(decisionLogger, "Decision Logger", "Event producer", "Фиксация model_version, input snapshot и outcome")
+}
+
+System_Boundary(bi, "BI и потребители решений") {
+  Container(datalens, "DataLens", "BI", "Certified dashboards и отчёты")
+  Container(pricingRuntime, "Pricing Runtime", "Domain consumer", "Применяет модель динамического ценообразования")
+  Container(fraudRuntime, "Fraud Runtime", "Domain consumer", "Применяет fraud model")
+  Container(allocationRuntime, "Driver Allocation Runtime", "Domain consumer", "Использует прогноз спроса/горячие зоны")
+}
+
+Rel(booking, kafka, "Booking events", "Kafka")
+Rel(driver, kafka, "Driver/location events", "Kafka")
+Rel(pricing, kafka, "Pricing/quote events", "Kafka")
+Rel(payments, kafka, "Payment events", "Kafka")
+Rel(fraud, kafka, "Fraud events", "Kafka")
+Rel(notification, kafka, "Notification delivery events", "Kafka")
+Rel(geography, kafka, "Zone/reference events", "Kafka")
+
+Rel(kafka, schemaRegistry, "Validate/publish by schema", "Avro")
+Rel(debezium, kafka, "CDC/outbox/reference snapshots", "Kafka Connect")
+Rel(flinkIngestion, kafka, "Читает domain events", "consumer")
+Rel(flinkIngestion, schemaRegistry, "Проверяет схемы", "registry")
+Rel(flinkIngestion, quarantine, "Невалидные/ poison messages", "DLQ")
+Rel(flinkIngestion, bronze, "Пишет validated raw events", "Iceberg sink")
+Rel(flinkFeatures, kafka, "Читает high-volume streams", "consumer")
+Rel(flinkFeatures, onlineFeatures, "Обновляет realtime features", "low latency write")
+Rel(flinkFeatures, clickhouse, "Пишет realtime aggregates", "insert")
+
+Rel(bronze, spark, "Batch cleaning/normalization", "ETL")
+Rel(spark, silver, "Пишет normalized datasets", "Iceberg")
+Rel(silver, spark, "Feature generation/aggregates", "batch")
+Rel(spark, gold, "Certified marts", "Iceberg/ClickHouse")
+Rel(gold, clickhouse, "Публикация realtime/BI marts", "sync/ETL")
+Rel(airflow, spark, "Оркестрация batch/backfill", "DAG")
+Rel(pspReports, airflow, "Settlement ingestion", "files/API")
+Rel(weatherEvents, airflow, "External demand signals", "API/files")
+
+Rel(dataQuality, bronze, "Проверяет volume/schema/freshness", "DQ checks")
+Rel(dataQuality, silver, "Проверяет quality rules", "DQ checks")
+Rel(dataQuality, gold, "Проверяет certified metrics", "DQ checks")
+Rel(dataQuality, catalog, "Публикует DQ status", "metadata")
+Rel(catalog, kafka, "Читает lineage/topics metadata", "OpenLineage/metadata")
+Rel(catalog, airflow, "Собирает lineage jobs", "OpenLineage")
+
+Rel(silver, featureStore, "Offline feature datasets", "point-in-time joins")
+Rel(featureStore, onlineFeatures, "Materialization online features", "sync")
+Rel(featureStore, training, "Training datasets", "batch")
+Rel(onlineFeatures, modelServing, "Online inference features", "low latency read")
+
+Rel(mlEngineer, mlflow, "Эксперименты и регистрация моделей", "UI/API")
+Rel(airflow, training, "Запускает переобучение", "pipeline")
+Rel(training, mlflow, "Логирует метрики/artifacts", "MLflow")
+Rel(mlflow, modelServing, "Публикует approved model versions", "registry deploy")
+Rel(modelServing, decisionLogger, "Логирует inference decisions", "events")
+Rel(decisionLogger, kafka, "ModelDecision/Outcome events", "Kafka")
+
+Rel(modelServing, pricingRuntime, "Surge/dynamic price inference", "API/events")
+Rel(modelServing, fraudRuntime, "Fraud score inference", "API")
+Rel(modelServing, allocationRuntime, "Demand/driver allocation inference", "API/events")
+Rel(pricingRuntime, kafka, "Price decisions/outcomes", "feedback loop")
+Rel(fraudRuntime, kafka, "Fraud decisions/outcomes", "feedback loop")
+Rel(allocationRuntime, kafka, "Allocation outcomes", "feedback loop")
+
+Rel(datalens, clickhouse, "Запросы к certified marts", "SQL")
+Rel(dataAnalyst, datalens, "Смотрит dashboards", "UI")
+Rel(opsUser, datalens, "Оперативный мониторинг бизнеса", "UI")
+Rel(dataAnalyst, catalog, "Находит certified datasets/owner", "UI")
+Rel(mlEngineer, catalog, "Проверяет lineage/impact", "UI")
+Rel(dataQuality, opsUser, "DQ alerts/degraded status", "Grafana/Alertmanager")
+
+@enduml

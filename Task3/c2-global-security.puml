@@ -1,0 +1,127 @@
+@startuml
+!include https://raw.githubusercontent.com/plantuml-stdlib/C4-PlantUML/master/C4_Container.puml
+
+AddElementTag("new", $bgColor="#FFE6E6", $borderColor="#FF0000", $fontColor="#CC0000")
+
+LAYOUT_TOP_DOWN()
+LAYOUT_WITH_LEGEND()
+
+title C2. Глобальный ландшафт GoFuture с инструментами защиты. Новые/изменённые элементы выделены красным
+
+Person(passenger, "Пассажиры и водители", "Мобильные приложения")
+Person(corp, "Корпоративные клиенты", "Веб-портал")
+Person(partner, "Партнёры", "Partner/Open API")
+
+System_Ext(route53, "<color:red>NEW</color> Route53 Geo/Latency DNS", "Traffic Flow: geolocation-first + latency/weighted targets, health checks", $tags="new")
+System_Ext(pspLocal, "Локальные PSP/банки", "Региональные платёжные интеграции")
+System_Ext(mapsLocal, "Локальные карты", "Яндекс Карты/локальные providers")
+System_Ext(pushLocal, "Push/SMS providers", "FCM/APNS/Huawei/local SMS")
+
+System_Boundary(globalPlane, "Global Control/Security Plane") {
+  Container(globalIam, "<color:red>NEW</color> Global IAM Federation Control", "OIDC/SAML federation control plane", "Управление identity, tenant/region claims; не hot path", $tags="new")
+  Container(globalConfig, "<color:red>NEW</color> Global Config/Feature Flags", "GitOps + config distribution", "Региональные правила, rollout, degraded mode", $tags="new")
+  Container(securityHub, "<color:red>NEW</color> Security Hub/SIEM Integration", "Security aggregation", "Findings, audit, incident response", $tags="new")
+  Container(globalObs, "Global Observability Aggregation", "Grafana/Prometheus federation", "SLO по регионам, capacity, error budget")
+}
+
+System_Boundary(sg, "Singapore cell ap-southeast-1") {
+  Container(sgWaf, "<color:red>NEW</color> SG WAF + Shield", "AWS WAF/Shield", "L7 filtering, rate limiting, DDoS protection", $tags="new")
+  Container(sgFirewall, "<color:red>NEW</color> SG Network Firewall/Egress Control", "Network Firewall/SG/NACL", "Сегментация и контроль исходящего трафика", $tags="new")
+  Container(sgApi, "SG API Gateway/ALB", "Private/public split", "TLS termination, JWT validation, region affinity")
+  Container(sgMesh, "<color:red>NEW</color> SG Service Mesh", "mTLS/service authorization", "Zero trust east-west traffic", $tags="new")
+  Container(sgServices, "SG Domain Services", "Booking/Driver/Pricing/Payments/Notification/Geography/Fraud", "Полный hot path региона")
+  ContainerDb(sgData, "SG Data Stores", "PostgreSQL/Redis/Kafka/ClickHouse", "Private subnets, encryption at rest")
+  Container(sgKms, "<color:red>NEW</color> SG KMS/Secrets", "Regional KMS/Secrets Manager", "Региональные ключи и секреты", $tags="new")
+}
+
+System_Boundary(jk, "Jakarta cell ap-southeast-3") {
+  Container(jkWaf, "<color:red>NEW</color> Jakarta WAF + Shield", "AWS WAF/Shield", "L7 filtering, rate limiting, DDoS protection", $tags="new")
+  Container(jkFirewall, "<color:red>NEW</color> Jakarta Network Firewall/Egress Control", "Network Firewall/SG/NACL", "Сегментация и контроль исходящего трафика", $tags="new")
+  Container(jkApi, "Jakarta API Gateway/ALB", "Private/public split", "TLS termination, JWT validation, region affinity")
+  Container(jkMesh, "<color:red>NEW</color> Jakarta Service Mesh", "mTLS/service authorization", "Zero trust east-west traffic", $tags="new")
+  Container(jkServices, "Jakarta Domain Services", "Booking/Driver/Pricing/Payments/Notification/Geography/Fraud", "Полный hot path региона")
+  ContainerDb(jkData, "Jakarta Data Stores", "PostgreSQL/Redis/Kafka/ClickHouse", "Private subnets, encryption at rest")
+  Container(jkKms, "<color:red>NEW</color> Jakarta KMS/Secrets", "Regional KMS/Secrets Manager", "Локальные ключи и секреты", $tags="new")
+}
+
+System_Boundary(sp, "São Paulo cell sa-east-1") {
+  Container(spWaf, "<color:red>NEW</color> LATAM WAF + Shield", "AWS WAF/Shield", "L7 filtering, rate limiting, DDoS protection", $tags="new")
+  Container(spFirewall, "<color:red>NEW</color> LATAM Network Firewall/Egress Control", "Network Firewall/SG/NACL", "Сегментация и контроль исходящего трафика", $tags="new")
+  Container(spApi, "LATAM API Gateway/ALB", "Private/public split", "TLS termination, JWT validation, region affinity")
+  Container(spMesh, "<color:red>NEW</color> LATAM Service Mesh", "mTLS/service authorization", "Zero trust east-west traffic", $tags="new")
+  Container(spServices, "LATAM Domain Services", "Booking/Driver/Pricing/Payments/Notification/Geography/Fraud", "Полный hot path региона")
+  ContainerDb(spData, "LATAM Data Stores", "PostgreSQL/Redis/Kafka/ClickHouse", "Private subnets, encryption at rest")
+  Container(spKms, "<color:red>NEW</color> LATAM KMS/Secrets", "Regional KMS/Secrets Manager", "Региональные ключи и секреты", $tags="new")
+}
+
+System_Boundary(fr, "Frankfurt control/analytics region eu-central-1") {
+  Container(frWaf, "<color:red>NEW</color> EU WAF + Shield", "AWS WAF/Shield", "Защита control plane APIs", $tags="new")
+  Container(frControlApi, "Control Plane APIs", "Admin/partner/config", "Не участвует в hot path поездки")
+  ContainerDb(frAnalytics, "Global Anonymized Analytics", "ClickHouse/Iceberg", "Обезличенные глобальные витрины")
+  Container(frKms, "<color:red>NEW</color> EU KMS/Secrets", "Regional KMS/Secrets Manager", "Ключи control plane/audit", $tags="new")
+}
+
+Rel(passenger, route53, "DNS/API traffic", "HTTPS")
+Rel(corp, route53, "Web portal/API", "HTTPS")
+Rel(partner, route53, "Partner API", "HTTPS")
+
+Rel(route53, sgWaf, "SEA traffic", "geo/latency")
+Rel(route53, jkWaf, "Indonesia traffic", "geolocation")
+Rel(route53, spWaf, "LATAM traffic", "geo/latency")
+Rel(route53, frWaf, "Control/admin traffic", "restricted")
+
+Rel(sgWaf, sgApi, "Filtered ingress", "HTTPS")
+Rel(jkWaf, jkApi, "Filtered ingress", "HTTPS")
+Rel(spWaf, spApi, "Filtered ingress", "HTTPS")
+Rel(frWaf, frControlApi, "Filtered ingress", "HTTPS")
+
+Rel(sgApi, sgMesh, "East-west calls", "mTLS")
+Rel(jkApi, jkMesh, "East-west calls", "mTLS")
+Rel(spApi, spMesh, "East-west calls", "mTLS")
+Rel(sgMesh, sgServices, "Authorized service-to-service", "mTLS")
+Rel(jkMesh, jkServices, "Authorized service-to-service", "mTLS")
+Rel(spMesh, spServices, "Authorized service-to-service", "mTLS")
+
+Rel(sgServices, sgData, "Private data access", "SQL/Kafka/Redis")
+Rel(jkServices, jkData, "Private data access", "SQL/Kafka/Redis")
+Rel(spServices, spData, "Private data access", "SQL/Kafka/Redis")
+Rel(sgServices, sgKms, "Decrypt/secrets via workload identity", "IAM/KMS")
+Rel(jkServices, jkKms, "Decrypt/secrets via workload identity", "IAM/KMS")
+Rel(spServices, spKms, "Decrypt/secrets via workload identity", "IAM/KMS")
+
+Rel(sgFirewall, sgApi, "Ingress/egress policy enforcement", "network controls")
+Rel(jkFirewall, jkApi, "Ingress/egress policy enforcement", "network controls")
+Rel(spFirewall, spApi, "Ingress/egress policy enforcement", "network controls")
+
+Rel(sgServices, pspLocal, "Approved regional PSP endpoints", "HTTPS through egress control")
+Rel(jkServices, pspLocal, "Approved regional PSP endpoints", "HTTPS through egress control")
+Rel(spServices, pspLocal, "Approved regional PSP endpoints", "HTTPS through egress control")
+Rel(sgServices, mapsLocal, "Approved map endpoints", "HTTPS")
+Rel(jkServices, mapsLocal, "Approved map endpoints", "HTTPS")
+Rel(spServices, mapsLocal, "Approved map endpoints", "HTTPS")
+Rel(sgServices, pushLocal, "Approved push endpoints", "HTTPS")
+Rel(jkServices, pushLocal, "Approved push endpoints", "HTTPS")
+Rel(spServices, pushLocal, "Approved push endpoints", "HTTPS")
+
+Rel(globalIam, sgApi, "Token signing keys/federation metadata", "OIDC/JWKS")
+Rel(globalIam, jkApi, "Token signing keys/federation metadata", "OIDC/JWKS")
+Rel(globalIam, spApi, "Token signing keys/federation metadata", "OIDC/JWKS")
+Rel(globalConfig, sgApi, "Regional config/feature flags", "Async distribution")
+Rel(globalConfig, jkApi, "Regional config/feature flags", "Async distribution")
+Rel(globalConfig, spApi, "Regional config/feature flags", "Async distribution")
+
+Rel(sgWaf, securityHub, "<color:red>WAF/security findings</color>", "security logs")
+Rel(jkWaf, securityHub, "<color:red>WAF/security findings</color>", "security logs")
+Rel(spWaf, securityHub, "<color:red>WAF/security findings</color>", "security logs")
+Rel(sgFirewall, securityHub, "<color:red>Network findings</color>", "flow/security logs")
+Rel(jkFirewall, securityHub, "<color:red>Network findings</color>", "flow/security logs")
+Rel(spFirewall, securityHub, "<color:red>Network findings</color>", "flow/security logs")
+Rel(sgServices, globalObs, "Service/SLO telemetry", "OTel/Prometheus federation")
+Rel(jkServices, globalObs, "Service/SLO telemetry", "OTel/Prometheus federation")
+Rel(spServices, globalObs, "Service/SLO telemetry", "OTel/Prometheus federation")
+
+Rel(sgData, frAnalytics, "<color:red>Только anonymized/aggregated exports</color>", "approved pipeline")
+Rel(jkData, frAnalytics, "<color:red>Только anonymized/aggregated exports</color>", "approved pipeline")
+Rel(spData, frAnalytics, "<color:red>Только anonymized/aggregated exports</color>", "approved pipeline")
+
+@enduml

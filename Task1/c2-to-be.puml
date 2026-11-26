@@ -1,0 +1,123 @@
+@startuml
+!include https://raw.githubusercontent.com/plantuml-stdlib/C4-PlantUML/master/C4_Container.puml
+
+LAYOUT_TOP_DOWN()
+LAYOUT_WITH_LEGEND()
+
+title C2. Целевая контейнерная архитектура GoFuture после доменной декомпозиции
+
+Person(passenger, "Пассажир", "Создаёт и отслеживает поездки")
+Person(driver, "Водитель", "Принимает заказы, передаёт геопозицию")
+Person(corpUser, "Корпоративный клиент", "Управляет заказами и отчётностью через веб-портал")
+Person(partnerDev, "Партнёр/разработчик", "Использует публичные API")
+
+System_Ext(psp, "Платёжные провайдеры и банки", "Яндекс Пэй, локальные PSP, банковские API")
+System_Ext(maps, "Картографические провайдеры", "Яндекс Карты и локальные карты")
+System_Ext(pushProviders, "Провайдеры уведомлений", "FCM, APNS, Huawei Push Kit, SMS/email")
+
+System_Boundary(gofuture, "GoFuture Platform") {
+  Container(apiGateway, "API Gateway / Edge", "Envoy/NGINX + auth filter", "Единая точка входа, версионирование, rate limiting, маршрутизация монолит/микросервисы")
+  Container(passengerBff, "Passenger BFF", "Django/Node/Kotlin", "Агрегирующий API для пассажирского приложения")
+  Container(driverBff, "Driver BFF", "Django/Node/Kotlin", "Агрегирующий API для водительского приложения")
+  Container(corpBff, "Corporate Portal BFF", "Django/React backend", "API веб-портала и административных операций")
+  Container(partnerApi, "Partner/Open API", "API service", "Публичный API самообслуживания партнёров")
+
+  Container(iam, "Identity & Access Management", "OIDC/OAuth2", "Аутентификация пользователей, сервисов и партнёров; RBAC/ABAC claims")
+  Container(config, "Configuration & Feature Flags", "Config service", "Региональная конфигурация, canary rollout, аварийные выключатели")
+
+  Container(booking, "Booking Service", "Python/Kotlin", "Жизненный цикл заказа, state machine, orchestrated Saga, matching workflow")
+  ContainerDb(bookingDb, "Booking DB", "PostgreSQL", "Bookings, trip states, saga state, offers")
+
+  Container(driverSvc, "Driver Service", "Python/Kotlin", "Профили водителей, транспорт, документы, статусы доступности")
+  ContainerDb(driverDb, "Driver DB", "PostgreSQL", "Drivers, vehicles, documents, availability")
+  Container(locationIngestion, "Driver Location Ingestion", "High-throughput ingestion", "Приём геопозиций, валидация, публикация location events")
+  ContainerDb(locationStore, "Hot Location Store", "Redis/KeyDB", "Последние геопозиции и hot availability state")
+
+  Container(pricing, "Pricing Service", "Python/Kotlin", "Базовые тарифы, quote API, динамическое ценообразование, surge")
+  ContainerDb(pricingDb, "Pricing DB", "PostgreSQL", "Tariffs, pricing rules, zone multipliers, quotes")
+
+  Container(payments, "Payments Service", "Python/Kotlin", "Авторизация, capture, refund, payout, immutable ledger")
+  ContainerDb(paymentsDb, "Payments DB", "PostgreSQL", "Transactions, ledger, payouts, tokens metadata")
+
+  Container(notification, "Notification Service", "Python", "Шаблоны, предпочтения, оркестрация push/SMS/email, delivery tracking")
+  ContainerDb(notificationDb, "Notification DB", "PostgreSQL", "Templates, device tokens, delivery statuses")
+
+  Container(geography, "Geography Service", "Python/Kotlin", "Зоны, маршруты, ETA, геокодирование, адаптеры карт")
+  ContainerDb(geographyDb, "Geography DB", "PostgreSQL + spatial indexes", "Zones, geofences, city/regional configuration")
+
+  Container(fraud, "Fraud Service", "Python/ML service", "Risk scoring, правила, блокировки, fraud cases")
+  ContainerDb(fraudDb, "Fraud DB", "PostgreSQL", "Rules, risk decisions, cases, reputation data")
+
+  Container(analytics, "Analytics Service", "Stream/BI API", "Оперативные витрины, дашборды, агрегированные метрики")
+  ContainerDb(analyticsDb, "Analytics Storage", "ClickHouse", "Real-time marts and aggregated data")
+
+  ContainerQueue(kafka, "Event Backbone", "Apache Kafka + Schema Registry", "Доменные события, команды Saga, DLQ, CDC/outbox streams")
+  Container(observability, "Observability Platform", "Prometheus, Grafana, Loki, Tempo, Alertmanager", "Метрики, логи, трассы, SLO и алерты")
+
+  Container(monolith, "Legacy Django Monolith", "Django/Celery", "Временно исполняет невыделенные сценарии; выводится после завершения миграции")
+  ContainerDb(monolithDb, "Legacy PostgreSQL", "PostgreSQL", "Историческая shared database, доступ только через migration facade")
+  Container(migrationAcl, "Migration ACL/Facade", "Adapter service", "Обратная совместимость, mapping legacy IDs, shadow-read/dual-run orchestration")
+  Container(cdc, "CDC/Outbox Connector", "Debezium/Kafka Connect", "Публикация изменений монолита и transactional outbox сервисов в Kafka")
+}
+
+Rel(passenger, apiGateway, "HTTPS REST/WebSocket", "mobile API")
+Rel(driver, apiGateway, "HTTPS REST/WebSocket", "mobile API")
+Rel(corpUser, apiGateway, "HTTPS", "corporate portal")
+Rel(partnerDev, apiGateway, "HTTPS", "public API")
+
+Rel(apiGateway, iam, "Проверка токена и claims", "OIDC/JWT")
+Rel(apiGateway, passengerBff, "Маршрутизация passenger API", "HTTP")
+Rel(apiGateway, driverBff, "Маршрутизация driver API", "HTTP")
+Rel(apiGateway, corpBff, "Маршрутизация corporate API", "HTTP")
+Rel(apiGateway, partnerApi, "Маршрутизация partner API", "HTTP")
+
+Rel(passengerBff, booking, "Создание/статусы заказов", "REST/gRPC")
+Rel(driverBff, driverSvc, "Профиль/статус доступности", "REST/gRPC")
+Rel(driverBff, locationIngestion, "Отправка геопозиции", "HTTP/gRPC")
+Rel(corpBff, booking, "Корпоративные заказы", "REST/gRPC")
+Rel(partnerApi, booking, "Партнёрские операции", "REST/gRPC")
+
+Rel(booking, bookingDb, "Чтение/запись", "SQL")
+Rel(driverSvc, driverDb, "Чтение/запись", "SQL")
+Rel(locationIngestion, locationStore, "Обновление hot state", "Redis protocol")
+Rel(pricing, pricingDb, "Чтение/запись", "SQL")
+Rel(payments, paymentsDb, "Чтение/запись", "SQL")
+Rel(notification, notificationDb, "Чтение/запись", "SQL")
+Rel(geography, geographyDb, "Чтение/запись", "SQL")
+Rel(fraud, fraudDb, "Чтение/запись", "SQL")
+Rel(analytics, analyticsDb, "Чтение/запись", "SQL")
+
+Rel(booking, kafka, "Публикует Booking* и команды Saga", "Kafka")
+Rel(driverSvc, kafka, "Публикует Driver* события", "Kafka")
+Rel(locationIngestion, kafka, "Публикует DriverLocationUpdated", "Kafka")
+Rel(pricing, kafka, "Публикует PriceCalculated/SurgeUpdated", "Kafka")
+Rel(payments, kafka, "Публикует Payment* события", "Kafka")
+Rel(fraud, kafka, "Публикует FraudRiskScored", "Kafka")
+Rel(notification, kafka, "Читает бизнес-события и публикует Notification*", "Kafka")
+Rel(analytics, kafka, "Читает доменные события", "Kafka")
+
+Rel(booking, pricing, "Запрашивает price quote", "REST/gRPC")
+Rel(booking, driverSvc, "Проверяет доступность водителя", "REST/gRPC/events")
+Rel(booking, payments, "Команды платёжной Saga", "Events/commands")
+Rel(booking, fraud, "Запрашивает/получает risk decision", "Events")
+Rel(booking, geography, "Запрашивает зоны и ETA", "REST/gRPC")
+
+Rel(payments, psp, "Авторизация/capture/payout", "PSP/Bank APIs")
+Rel(geography, maps, "Геокодирование/маршруты", "Map APIs")
+Rel(notification, pushProviders, "Push/SMS/email", "Provider APIs")
+
+Rel(apiGateway, monolith, "Legacy routes на переходном этапе", "HTTP")
+Rel(monolith, monolithDb, "SQL", "PostgreSQL")
+Rel(monolith, migrationAcl, "Адаптация legacy контрактов", "HTTP")
+Rel(migrationAcl, booking, "Совместимые операции", "REST")
+Rel(monolithDb, cdc, "CDC на переходном этапе", "WAL/Debezium")
+Rel(bookingDb, cdc, "Transactional outbox", "WAL/Debezium")
+Rel(cdc, kafka, "Публикация canonical events", "Kafka")
+
+Rel(config, apiGateway, "Правила маршрутизации/rollout", "Config/flags")
+Rel(config, booking, "Feature flags", "Config/flags")
+Rel(observability, apiGateway, "Собирает telemetry", "OTel/Prometheus")
+Rel(observability, kafka, "Собирает lag/throughput", "Exporters")
+Rel(observability, booking, "Собирает telemetry", "OTel/Prometheus")
+
+@enduml

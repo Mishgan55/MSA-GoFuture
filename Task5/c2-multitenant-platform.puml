@@ -1,0 +1,107 @@
+@startuml
+!include https://raw.githubusercontent.com/plantuml-stdlib/C4-PlantUML/master/C4_Container.puml
+
+LAYOUT_TOP_DOWN()
+LAYOUT_WITH_LEGEND()
+
+title C2. Мультитенантная платформа GoFuture: IAM, onboarding, потоки данных и мониторинг
+
+Person(tenantAdmin, "Tenant Admin", "Администратор партнёра")
+Person(tenantOps, "Tenant Operations", "Операционная команда партнёра")
+Person(partnerApiClient, "Partner API Client", "Server-to-server интеграция")
+Person(platformSre, "Platform SRE/Support", "Эксплуатация и поддержка платформы")
+
+System_Ext(partnerIdp, "Partner Identity Provider", "Корпоративный OIDC/SAML IdP")
+System_Ext(localPsp, "Локальные PSP/банки", "Tenant/region-specific платёжные интеграции")
+System_Ext(localMaps, "Локальные карты", "Tenant/region-specific map providers")
+
+System_Boundary(controlPlane, "Tenant/Platform Control Plane") {
+  Container(partnerPortal, "Partner/Admin Portal", "Self-service UI", "Заявки, пользователи, API clients, usage, статус onboarding")
+  Container(tenantControlApi, "Tenant Control API", "Control service", "CRUD tenant configuration, tier, regions, modules")
+  Container(iam, "IAM/SSO", "Keycloak/OIDC/SAML", "Federation, RBAC/ABAC, service accounts, MFA")
+  Container(onboarding, "Onboarding Workflow Orchestrator", "Temporal", "Provisioning, validation, compensation, approvals")
+  Container(provisioner, "Tenant Provisioner", "Terraform/Crossplane/ArgoCD", "DB, Kafka ACL, storage, keys, dashboards, feature flags")
+  ContainerDb(controlDb, "Tenant Control DB", "PostgreSQL", "Tenant registry, tier, compliance profile, onboarding state")
+  Container(featureFlags, "Config/Feature Flags", "Config service", "Tenant-specific modules и rollout")
+}
+
+System_Boundary(dataPlane, "Regional Tenant-Aware Data Plane") {
+  Container(apiGateway, "Tenant-Aware API Gateway", "Envoy/ALB", "JWT validation, tenant context, quotas, rate limits")
+  Container(authz, "Authorization Policy Service", "OPA-like/API", "RBAC+ABAC enforcement по tenant/region/role/scope")
+
+  Container(booking, "Booking Service", "Tenant-aware domain service", "Заказы и state machine в контексте tenant")
+  Container(driver, "Driver Service", "Tenant-aware domain service", "Водители и доступность tenant")
+  Container(pricing, "Pricing Service", "Tenant-aware domain service", "Тарифы и цены tenant")
+  Container(payments, "Payments Service", "Tenant-aware domain service", "Платежи и payouts tenant")
+  Container(notification, "Notification Service", "Tenant-aware domain service", "Tenant templates/channels")
+  Container(fraud, "Fraud Service", "Tenant-aware domain service", "Tenant-specific rules + global models")
+
+  ContainerDb(pooledDb, "Pooled Tenant Databases", "PostgreSQL + RLS", "Standard tenants: tenant_id + row-level security")
+  ContainerDb(dedicatedDb, "Dedicated Tenant DB/Schema", "PostgreSQL", "Regulated/large tenants: dedicated schema/database")
+  ContainerDb(tenantKeys, "Tenant KMS/Secrets", "Regional KMS/Secrets", "Tenant-specific keys and provider credentials")
+  ContainerQueue(kafka, "Tenant-Aware Kafka", "Kafka", "Tenant-labeled events; dedicated topics для regulated tenants")
+}
+
+System_Boundary(observability, "Tenant Monitoring/Observability") {
+  Container(prometheus, "Prometheus", "Metrics", "Service/tier/controlled tenant metrics")
+  Container(grafana, "Grafana", "Dashboards", "Tenant SLA, usage, noisy neighbour, onboarding")
+  Container(loki, "Loki", "Logs", "Tenant-scoped structured logs")
+  Container(tempo, "Tempo/Jaeger", "Traces", "Tenant context in traces")
+  Container(alertmanager, "Alertmanager", "Alerts", "Tenant/platform routing")
+  ContainerDb(tenantAnalytics, "Tenant Usage Analytics", "ClickHouse", "High-cardinality drill-down, cost/showback")
+}
+
+Rel(tenantAdmin, partnerPortal, "Управляет tenant и пользователями", "HTTPS/SSO")
+Rel(tenantOps, apiGateway, "Операционные действия", "HTTPS/SSO")
+Rel(partnerApiClient, apiGateway, "M2M API calls", "OAuth2 client credentials")
+Rel(platformSre, partnerPortal, "Support/operations", "Restricted admin UI")
+
+Rel(partnerPortal, tenantControlApi, "Tenant configuration/onboarding requests", "HTTPS")
+Rel(partnerPortal, iam, "Login/SSO", "OIDC/SAML")
+Rel(iam, partnerIdp, "Federation", "OIDC/SAML")
+Rel(tenantControlApi, controlDb, "Tenant registry", "SQL")
+Rel(tenantControlApi, onboarding, "Запускает workflow", "Workflow API")
+Rel(onboarding, provisioner, "Provision infrastructure/config", "IaC/GitOps")
+Rel(provisioner, iam, "Создаёт realms/groups/clients", "Admin API")
+Rel(provisioner, pooledDb, "RLS registration/migrations", "SQL/Terraform")
+Rel(provisioner, dedicatedDb, "Dedicated schema/db/user", "SQL/Terraform")
+Rel(provisioner, tenantKeys, "Keys/secrets/rotation", "KMS/Secrets API")
+Rel(provisioner, kafka, "ACL/topics/consumer groups", "Kafka admin")
+Rel(provisioner, featureFlags, "Tenant modules/config", "Config API")
+Rel(provisioner, grafana, "Tenant dashboards/alerts", "Provisioning API")
+
+Rel(apiGateway, iam, "Валидирует token/JWKS", "OIDC")
+Rel(apiGateway, authz, "Проверяет RBAC/ABAC", "policy query")
+Rel(apiGateway, booking, "tenant-scoped booking API", "mTLS + tenant context")
+Rel(apiGateway, driver, "tenant-scoped driver API", "mTLS + tenant context")
+Rel(apiGateway, pricing, "tenant-scoped pricing API", "mTLS + tenant context")
+Rel(apiGateway, payments, "tenant-scoped payments API", "mTLS + tenant context")
+
+Rel(booking, pooledDb, "Standard tenant data", "SQL + RLS")
+Rel(driver, pooledDb, "Standard tenant data", "SQL + RLS")
+Rel(pricing, pooledDb, "Standard tenant data", "SQL + RLS")
+Rel(payments, dedicatedDb, "Regulated/dedicated tenant data", "SQL")
+Rel(booking, kafka, "Tenant events", "Kafka")
+Rel(driver, kafka, "Tenant events", "Kafka")
+Rel(pricing, kafka, "Tenant events", "Kafka")
+Rel(payments, kafka, "Tenant events", "Kafka")
+Rel(notification, kafka, "Consumes tenant business events", "Kafka")
+Rel(fraud, kafka, "Consumes risk signals", "Kafka")
+
+Rel(payments, tenantKeys, "Получает provider credentials", "Secrets API")
+Rel(payments, localPsp, "Tenant-specific payment integration", "PSP API")
+Rel(pricing, localMaps, "Zone/ETA inputs через Geography adapters", "Map API")
+
+Rel(apiGateway, prometheus, "RED/tenant-tier metrics", "OTel/Prometheus")
+Rel(booking, prometheus, "Service metrics", "OTel/Prometheus")
+Rel(kafka, prometheus, "Lag/throughput metrics", "exporters")
+Rel(apiGateway, loki, "Structured logs с tenant_id", "Loki")
+Rel(booking, tempo, "Traces с tenant context", "OTLP")
+Rel(prometheus, alertmanager, "Tenant/SLO alerts", "rules")
+Rel(grafana, prometheus, "Dashboards", "PromQL")
+Rel(grafana, tenantAnalytics, "Usage drill-down", "SQL")
+Rel(kafka, tenantAnalytics, "Tenant usage/business events", "stream/ETL")
+Rel(platformSre, grafana, "Смотрит tenant/platform dashboards", "HTTPS")
+Rel(tenantAdmin, grafana, "Видит только свой tenant dashboard", "RBAC/SSO")
+
+@enduml

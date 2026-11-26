@@ -1,0 +1,79 @@
+@startuml
+!include https://raw.githubusercontent.com/plantuml-stdlib/C4-PlantUML/master/C4_Container.puml
+
+AddElementTag("new", $bgColor="#FFE6E6", $borderColor="#FF0000", $fontColor="#CC0000")
+
+LAYOUT_LEFT_RIGHT()
+LAYOUT_WITH_LEGEND()
+
+title Схема репликации данных между регионами. Новые/изменённые элементы выделены красным
+
+System_Boundary(globalControl, "<color:red>NEW</color> Global Control Plane") {
+  Container(controlConfig, "<color:red>NEW</color> Config/Catalog Control Plane", "GitOps + regional config distribution", "Справочники, feature flags, tenant metadata без лишних PII", $tags="new")
+  Container(globalLake, "<color:red>NEW</color> Global Anonymized Lakehouse", "S3/Iceberg/ClickHouse marts", "Только обезличенные и агрегированные данные", $tags="new")
+  Container(securityArchive, "<color:red>NEW</color> Security/Audit Archive", "Immutable object storage", "Аудит и security telemetry при наличии правового основания", $tags="new")
+}
+
+System_Boundary(sea1, "Region: Singapore ap-southeast-1") {
+  ContainerDb(sgBookingDb, "Booking DB Primary", "Aurora/PostgreSQL Multi-AZ", "Активные поездки Сингапур/SEA")
+  ContainerDb(sgPaymentsDb, "Payments DB Primary", "Aurora/PostgreSQL Multi-AZ", "Ledger SG/SEA")
+  ContainerQueue(sgKafka, "Regional Kafka", "MSK/Kafka", "Hot path events SEA")
+  Container(sgFlink, "Regional Flink", "Stream processing", "Supply/demand, surge, hot zones")
+  ContainerDb(sgRedis, "Hot State Cache", "Redis/KeyDB", "Последние геопозиции; rebuildable")
+  ContainerDb(sgCh, "Regional ClickHouse", "Analytics", "Региональные витрины")
+}
+
+System_Boundary(id1, "Region: Jakarta ap-southeast-3") {
+  ContainerDb(jkBookingDb, "Booking DB Primary", "Aurora/PostgreSQL Multi-AZ", "Активные поездки Индонезии")
+  ContainerDb(jkPaymentsDb, "Payments DB Primary", "Aurora/PostgreSQL Multi-AZ", "Ledger ID")
+  ContainerQueue(jkKafka, "Regional Kafka", "MSK/Kafka", "Hot path events ID")
+  ContainerDb(jkRedis, "Hot State Cache", "Redis/KeyDB", "Последние геопозиции; rebuildable")
+  ContainerDb(jkCh, "Regional ClickHouse", "Analytics", "Региональные витрины")
+}
+
+System_Boundary(sa1, "Region: São Paulo sa-east-1") {
+  ContainerDb(spBookingDb, "Booking DB Primary", "Aurora/PostgreSQL Multi-AZ", "Активные поездки Южной Америки")
+  ContainerDb(spPaymentsDb, "Payments DB Primary", "Aurora/PostgreSQL Multi-AZ", "Ledger LATAM")
+  ContainerQueue(spKafka, "Regional Kafka", "MSK/Kafka", "Hot path events LATAM")
+  ContainerDb(spRedis, "Hot State Cache", "Redis/KeyDB", "Последние геопозиции; rebuildable")
+  ContainerDb(spCh, "Regional ClickHouse", "Analytics", "Региональные витрины")
+}
+
+System_Boundary(eu1, "Region: Frankfurt eu-central-1") {
+  ContainerDb(frControlDb, "Control Plane DB", "PostgreSQL Multi-AZ", "Control plane state")
+  ContainerDb(frAnalytics, "Global Analytics Store", "ClickHouse/Iceberg", "Глобальные обезличенные витрины")
+  ContainerDb(frDrBackup, "Encrypted DR Backup/Replica Store", "Encrypted backup/WAL archive", "DR-копии только при наличии правового основания")
+  Container(frDr, "<color:red>NEW</color> DR Restore/Control Tooling", "Runbooks + automation", "Восстановление и проверка реплик", $tags="new")
+}
+
+Rel(controlConfig, sgKafka, "<color:red>Async reference/config replication</color>", "MirrorMaker/Config distributor")
+Rel(controlConfig, jkKafka, "<color:red>Async reference/config replication</color>", "MirrorMaker/Config distributor")
+Rel(controlConfig, spKafka, "<color:red>Async reference/config replication</color>", "MirrorMaker/Config distributor")
+Rel(controlConfig, frControlDb, "Control state replication/backup", "Async")
+
+Rel(sgBookingDb, jkBookingDb, "<color:red>DR async replica, активируется только при failover</color>", "Aurora cross-region replica")
+Rel(jkBookingDb, sgBookingDb, "<color:red>DR async replica, активируется только при failover</color>", "Aurora cross-region replica")
+Rel(spBookingDb, frDrBackup, "<color:red>DR backup/replica только при наличии правового основания</color>", "Encrypted async backup/replication")
+
+Rel(sgKafka, globalLake, "<color:red>Обезличенные normalized events</color>", "MirrorMaker + transformation")
+Rel(jkKafka, globalLake, "<color:red>Обезличенные normalized events</color>", "MirrorMaker + transformation")
+Rel(spKafka, globalLake, "<color:red>Обезличенные normalized events</color>", "MirrorMaker + transformation")
+Rel(globalLake, frAnalytics, "Глобальные агрегаты", "ELT")
+
+Rel(sgKafka, sgCh, "Региональные events", "Kafka Connect/Flink")
+Rel(jkKafka, jkCh, "Региональные events", "Kafka Connect/Flink")
+Rel(spKafka, spCh, "Региональные events", "Kafka Connect/Flink")
+
+Rel(sgRedis, sgKafka, "Восстановление hot state из stream", "Replay/compacted snapshot")
+Rel(jkRedis, jkKafka, "Восстановление hot state из stream", "Replay/compacted snapshot")
+Rel(spRedis, spKafka, "Восстановление hot state из stream", "Replay/compacted snapshot")
+
+Rel(sgPaymentsDb, securityArchive, "<color:red>Audit/WAL backup по compliance policy</color>", "Continuous backup")
+Rel(jkPaymentsDb, securityArchive, "<color:red>Audit/WAL backup по compliance policy</color>", "Continuous backup")
+Rel(spPaymentsDb, securityArchive, "<color:red>Audit/WAL backup по compliance policy</color>", "Continuous backup")
+
+Rel(frDr, sgBookingDb, "Failover validation/runbook", "Automation")
+Rel(frDr, jkBookingDb, "Failover validation/runbook", "Automation")
+Rel(frDr, spBookingDb, "Failover validation/runbook", "Automation")
+
+@enduml
