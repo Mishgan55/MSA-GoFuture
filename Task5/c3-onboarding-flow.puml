@@ -1,0 +1,76 @@
+@startuml
+!include https://raw.githubusercontent.com/plantuml-stdlib/C4-PlantUML/master/C4_Component.puml
+
+LAYOUT_TOP_DOWN()
+LAYOUT_WITH_LEGEND()
+
+title C3. Автоматизированный onboarding нового партнёра
+
+Person(partnerManager, "Partner Manager", "Создаёт заявку партнёра")
+Person(compliance, "Compliance/Security Approver", "Подтверждает запуск")
+Person(tenantAdmin, "Tenant Admin", "Первый администратор партнёра")
+
+System_Boundary(controlPlane, "Tenant Control Plane") {
+  Component(portal, "Partner Portal", "UI", "Форма заявки и статус onboarding")
+  Component(api, "Tenant Control API", "API", "Валидация заявки, создание tenant record")
+  ComponentDb(controlDb, "Tenant Registry DB", "PostgreSQL", "tenant_id, tier, region, compliance profile, статус")
+  Component(workflow, "Onboarding Workflow", "Temporal workflow", "Оркестрация шагов, retries, compensation")
+  Component(approval, "Approval Task Manager", "Workflow tasks", "Legal/security/capacity approvals")
+  Component(validation, "Tenant Validation Runner", "Smoke/contract tests", "SSO, API, isolation, monitoring checks")
+}
+
+System_Boundary(provisioning, "Provisioning Layer") {
+  Component(iac, "Terraform/Crossplane", "Infrastructure as Code", "DB, storage, IAM bindings, KMS keys")
+  Component(gitops, "ArgoCD/GitOps", "Deployment/config automation", "Feature flags, dashboards, service config")
+  Component(iamAdmin, "IAM Admin Connector", "Keycloak Admin API", "Realm/groups/SSO/service accounts")
+  Component(dbAdmin, "DB Provisioning Connector", "PostgreSQL automation", "Pooled RLS registration или dedicated schema/db")
+  Component(kafkaAdmin, "Kafka Admin Connector", "Kafka ACL/topics", "Tenant access и segregation")
+  Component(monitoringProv, "Monitoring Provisioner", "Grafana/Prometheus automation", "Dashboards, alerts, recording rules")
+}
+
+System_Boundary(runtime, "Regional Runtime") {
+  Component(gateway, "Tenant-Aware API Gateway", "Runtime", "Проверка tenant context и quotas")
+  Component(domainServices, "Domain Services", "Runtime", "Booking/Driver/Pricing/Payments/Notification/Fraud")
+  Component(featureFlags, "Feature Flags/Config", "Runtime", "Tenant modules и rollout")
+}
+
+System_Boundary(monitoring, "Monitoring") {
+  Component(grafana, "Grafana/Alertmanager", "Dashboards/alerts", "Tenant SLA/onboarding status")
+  Component(audit, "Audit Log", "Immutable logging", "Все шаги onboarding и admin actions")
+}
+
+Rel(partnerManager, portal, "1. Создаёт заявку tenant", "HTTPS")
+Rel(portal, api, "2. Отправляет конфигурацию", "API")
+Rel(api, controlDb, "3. Создаёт tenant record status=PENDING", "SQL")
+Rel(api, workflow, "4. Запускает onboarding workflow", "Workflow API")
+Rel(workflow, approval, "5. Создаёт approval tasks", "Task API")
+Rel(compliance, approval, "6. Подтверждает legal/security/capacity", "UI/API")
+Rel(approval, workflow, "7. Approval result", "callback")
+
+Rel(workflow, iac, "8. Provision infrastructure", "job/API")
+Rel(iac, dbAdmin, "8a. DB resources", "automation")
+Rel(iac, kafkaAdmin, "8b. Kafka resources", "automation")
+Rel(iac, iamAdmin, "8c. IAM/SSO resources", "automation")
+Rel(workflow, gitops, "9. Deploy tenant config", "GitOps sync")
+Rel(gitops, featureFlags, "9a. Modules/flags", "config")
+Rel(gitops, monitoringProv, "9b. Dashboards/alerts", "config")
+
+Rel(dbAdmin, controlDb, "10. Фиксирует DB provisioning state", "SQL")
+Rel(kafkaAdmin, controlDb, "10. Фиксирует Kafka state", "SQL")
+Rel(iamAdmin, controlDb, "10. Фиксирует IAM state", "SQL")
+Rel(workflow, validation, "11. Запускает smoke/isolation tests", "job")
+Rel(validation, gateway, "11a. Test API/tenant mismatch", "HTTPS")
+Rel(validation, domainServices, "11b. Test sandbox booking/driver/tariff", "API")
+Rel(validation, grafana, "11c. Проверяет dashboards/alerts", "API")
+Rel(validation, controlDb, "12. Записывает validation report", "SQL")
+
+Rel(workflow, controlDb, "13. Переводит status=SANDBOX_READY/PRODUCTION_READY", "SQL")
+Rel(workflow, tenantAdmin, "14. Приглашение администратора/SSO activation", "email/portal")
+Rel(tenantAdmin, portal, "15. Первый вход и приёмка sandbox", "SSO")
+Rel(portal, workflow, "16. Запрос production enablement", "API")
+Rel(workflow, featureFlags, "17. Включает production pilot", "Config")
+Rel(workflow, audit, "18. Логирует все шаги/approvals", "Audit events")
+Rel(monitoringProv, grafana, "19. Tenant SLA dashboards активны", "Dashboard provisioning")
+Rel(grafana, partnerManager, "20. Статус onboarding/usage", "Dashboard")
+
+@enduml

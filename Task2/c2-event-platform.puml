@@ -1,0 +1,124 @@
+@startuml
+!include https://raw.githubusercontent.com/plantuml-stdlib/C4-PlantUML/master/C4_Container.puml
+
+LAYOUT_TOP_DOWN()
+LAYOUT_WITH_LEGEND()
+
+title C2. Архитектура событийной платформы GoFuture
+
+Person(passenger, "Пассажир", "Создаёт заказы и отслеживает поездку")
+Person(driver, "Водитель", "Передаёт геопозицию и принимает предложения")
+
+System_Ext(psp, "Платёжные провайдеры", "Яндекс Пэй, локальные PSP, банки")
+System_Ext(pushProviders, "Push/SMS/email провайдеры", "FCM, APNS, Huawei Push Kit")
+
+System_Boundary(gofuture, "GoFuture Platform") {
+  Container(apiGateway, "API Gateway", "Edge gateway", "Приём пользовательских API и маршрутизация")
+
+  Container(booking, "Booking Service", "Domain service", "State machine заказа и orchestrated Saga")
+  ContainerDb(bookingDb, "Booking DB", "PostgreSQL", "booking state + saga state + transactional outbox")
+
+  Container(driverSvc, "Driver Service", "Domain service", "Профили, доступность, статусы водителей")
+  ContainerDb(driverDb, "Driver DB", "PostgreSQL", "driver state + outbox")
+  Container(locationIngestion, "Driver Location Ingestion", "High-throughput service", "Приём location updates")
+  ContainerDb(locationStore, "Hot Location Store", "Redis/KeyDB", "Последняя геопозиция водителя")
+
+  Container(pricing, "Pricing Service", "Domain service", "Quote API, tariff rules, dynamic pricing")
+  ContainerDb(pricingDb, "Pricing DB", "PostgreSQL", "tariffs + outbox")
+
+  Container(payments, "Payments Service", "Domain service", "Авторизация, capture, refund, payout, ledger")
+  ContainerDb(paymentsDb, "Payments DB", "PostgreSQL", "payments + ledger + outbox")
+
+  Container(fraud, "Fraud Service", "Domain service", "Realtime risk scoring and decisions")
+  ContainerDb(fraudDb, "Fraud DB", "PostgreSQL", "rules + decisions + outbox")
+
+  Container(notification, "Notification Service", "Domain service", "Отправка уведомлений и delivery tracking")
+  ContainerDb(notificationDb, "Notification DB", "PostgreSQL", "templates + delivery status + inbox/outbox")
+
+  Container(geography, "Geography Service", "Domain service", "Зоны, ETA, картографические адаптеры")
+  ContainerDb(geographyDb, "Geography DB", "PostgreSQL", "zones + geofences")
+
+  System_Boundary(eventPlatform, "Event Backbone") {
+    ContainerQueue(kafka, "Apache Kafka", "Event streaming platform", "Доменные события, Saga commands, retry/DLQ topics")
+    Container(schemaRegistry, "Schema Registry", "Avro/CloudEvents registry", "Версии и совместимость public event contracts")
+    Container(kafkaConnect, "Kafka Connect / Debezium", "CDC connectors", "Публикация transactional outbox и интеграции хранилищ")
+    Container(mirrorMaker, "MirrorMaker 2", "Kafka replication", "Селективная репликация reference/analytics topics между регионами")
+    Container(flink, "Apache Flink", "Stateful stream processing", "Supply/demand, surge, hot zones, realtime features")
+    ContainerDb(flinkState, "Flink State/Checkpoints", "RocksDB/Object storage", "Состояние потоковых вычислений")
+  }
+
+  Container(analytics, "Analytics Service", "Analytics API", "Оперативные витрины и BI-facing данные")
+  ContainerDb(clickhouse, "ClickHouse", "Analytics storage", "Real-time aggregates and marts")
+
+  System_Boundary(obs, "Observability Platform") {
+    Container(prometheus, "Prometheus", "Metrics", "Сбор метрик сервисов, Kafka, Flink, exporters")
+    Container(grafana, "Grafana", "Dashboards", "SLO, Kafka lag, business journey, Flink health")
+    Container(loki, "Loki", "Logs", "Structured JSON logs")
+    Container(tempo, "Tempo/Jaeger", "Traces", "Сквозные sync/async трассы")
+    Container(alertmanager, "Alertmanager", "Alerting", "Маршрутизация алертов и paging")
+    Container(blackbox, "Blackbox Exporter", "Synthetic checks", "Проверка публичных user journeys")
+  }
+}
+
+Rel(passenger, apiGateway, "Создание и статус заказа", "HTTPS")
+Rel(driver, apiGateway, "Статус/геопозиция", "HTTPS")
+Rel(apiGateway, booking, "Booking API", "HTTP/gRPC")
+Rel(apiGateway, locationIngestion, "Location ingestion", "HTTP/gRPC")
+
+Rel(booking, bookingDb, "TX: state + outbox", "SQL")
+Rel(driverSvc, driverDb, "TX: state + outbox", "SQL")
+Rel(pricing, pricingDb, "TX: state + outbox", "SQL")
+Rel(payments, paymentsDb, "TX: state + outbox", "SQL")
+Rel(fraud, fraudDb, "TX: state + outbox", "SQL")
+Rel(notification, notificationDb, "TX: state + outbox/inbox", "SQL")
+Rel(locationIngestion, locationStore, "Обновляет hot state", "Redis")
+
+Rel(bookingDb, kafkaConnect, "WAL/outbox", "Debezium CDC")
+Rel(driverDb, kafkaConnect, "WAL/outbox", "Debezium CDC")
+Rel(pricingDb, kafkaConnect, "WAL/outbox", "Debezium CDC")
+Rel(paymentsDb, kafkaConnect, "WAL/outbox", "Debezium CDC")
+Rel(fraudDb, kafkaConnect, "WAL/outbox", "Debezium CDC")
+Rel(kafkaConnect, kafka, "Публикует canonical events", "Kafka producer")
+Rel(locationIngestion, kafka, "DriverLocationUpdated", "Kafka producer")
+
+Rel(kafka, schemaRegistry, "Проверка схем", "Avro/Schema Registry")
+Rel(booking, schemaRegistry, "Регистрация/валидация event schema", "HTTPS")
+
+Rel(booking, kafka, "Публикует/читает Booking lifecycle и Saga commands", "Kafka")
+Rel(driverSvc, kafka, "Публикует/читает Driver events", "Kafka")
+Rel(pricing, kafka, "Публикует/читает Pricing events", "Kafka")
+Rel(payments, kafka, "Публикует/читает Payment events", "Kafka")
+Rel(fraud, kafka, "Публикует/читает Fraud events", "Kafka")
+Rel(notification, kafka, "Читает бизнес-события, публикует delivery events", "Kafka")
+Rel(geography, kafka, "Публикует zone/reference updates", "Kafka")
+
+Rel(flink, kafka, "Читает location/booking/payment streams", "Kafka consumer")
+Rel(flink, kafka, "Публикует SurgeUpdated/HotZoneDetected/features", "Kafka producer")
+Rel(flink, flinkState, "Checkpoints/state", "RocksDB/S3")
+Rel(pricing, kafka, "Читает SurgeUpdated", "Kafka consumer")
+Rel(driverSvc, kafka, "Читает HotZoneDetected", "Kafka consumer")
+
+Rel(kafka, kafkaConnect, "Экспорт normalized topics", "Connect sink")
+Rel(kafkaConnect, clickhouse, "Streaming inserts", "ClickHouse sink")
+Rel(analytics, clickhouse, "Читает витрины", "SQL")
+Rel(mirrorMaker, kafka, "Селективная межрегиональная репликация", "MirrorMaker 2")
+
+Rel(payments, psp, "Authorization/capture/status query", "PSP APIs")
+Rel(notification, pushProviders, "Delivery", "FCM/APNS/Huawei/SMS")
+
+Rel(prometheus, kafka, "Собирает broker/topic metrics", "JMX/Kafka exporter")
+Rel(prometheus, flink, "Собирает job metrics", "Flink metrics")
+Rel(prometheus, booking, "Собирает RED/SLO metrics", "OTel/Prometheus")
+Rel(prometheus, kafkaConnect, "Собирает connector metrics", "JMX exporter")
+Rel(booking, tempo, "Отправляет traces", "OTLP")
+Rel(locationIngestion, tempo, "Отправляет traces", "OTLP")
+Rel(booking, loki, "Structured logs", "Loki API")
+Rel(flink, loki, "Job logs", "Loki API")
+Rel(grafana, prometheus, "Запрашивает метрики", "PromQL")
+Rel(grafana, loki, "Запрашивает логи", "LogQL")
+Rel(grafana, tempo, "Запрашивает traces", "TraceQL/API")
+Rel(prometheus, alertmanager, "Отправляет alerts", "Alerting rules")
+Rel(blackbox, apiGateway, "Synthetic user journeys", "HTTPS")
+Rel(prometheus, blackbox, "Собирает synthetic metrics", "Prometheus scrape")
+
+@enduml

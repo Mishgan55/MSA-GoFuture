@@ -1,0 +1,68 @@
+@startuml
+!include https://raw.githubusercontent.com/plantuml-stdlib/C4-PlantUML/master/C4_Container.puml
+
+AddElementTag("new", $bgColor="#FFE6E6", $borderColor="#FF0000", $fontColor="#CC0000")
+
+LAYOUT_TOP_DOWN()
+LAYOUT_WITH_LEGEND()
+
+title Схема геомаршрутизации. Новые/изменённые элементы выделены красным
+
+Person(userSea, "Пользователь SEA", "Пассажир/водитель в Юго-Восточной Азии")
+Person(userSa, "Пользователь LATAM", "Пассажир/водитель в Южной Америке")
+Person(userId, "Пользователь Индонезии", "Пользователь с локальными требованиями резидентности")
+
+System_Ext(route53, "<color:red>NEW</color> Route53 Latency/Geolocation DNS", "Traffic Flow: geolocation-first + latency/weighted targets + health checks", $tags="new")
+System_Ext(globalControl, "<color:red>NEW</color> Global Routing Control", "Home region registry + failover policy", $tags="new")
+
+System_Boundary(sg, "Singapore region") {
+  Container(sgWaf, "<color:red>NEW</color> Regional WAF", "AWS WAF + Shield", "DDoS/L7 filtering", $tags="new")
+  Container(sgApi, "Regional API Gateway", "Envoy/ALB", "JWT validation + region affinity")
+  Container(sgIam, "Regional IAM/Bootstrap", "OIDC", "Выдача токена с home_region")
+  Container(sgServices, "Regional Services", "Booking/Driver/Pricing/Payments", "Hot path active trips")
+}
+
+System_Boundary(jk, "Jakarta region") {
+  Container(jkWaf, "<color:red>NEW</color> Regional WAF", "AWS WAF + Shield", "DDoS/L7 filtering", $tags="new")
+  Container(jkApi, "Regional API Gateway", "Envoy/ALB", "JWT validation + region affinity")
+  Container(jkIam, "Regional IAM/Bootstrap", "OIDC", "Выдача токена с home_region")
+  Container(jkServices, "Regional Services", "Booking/Driver/Pricing/Payments", "Hot path active trips")
+}
+
+System_Boundary(sp, "São Paulo region") {
+  Container(spWaf, "<color:red>NEW</color> Regional WAF", "AWS WAF + Shield", "DDoS/L7 filtering", $tags="new")
+  Container(spApi, "Regional API Gateway", "Envoy/ALB", "JWT validation + region affinity")
+  Container(spIam, "Regional IAM/Bootstrap", "OIDC", "Выдача токена с home_region")
+  Container(spServices, "Regional Services", "Booking/Driver/Pricing/Payments", "Hot path active trips")
+}
+
+Rel(userSea, route53, "1. DNS api.gofuture.com", "latency/geolocation")
+Rel(userSa, route53, "1. DNS api.gofuture.com", "latency/geolocation")
+Rel(userId, route53, "1. DNS api.gofuture.com; geolocation override ID", "country rules")
+
+Rel(route53, sgWaf, "2. Ближайший здоровый регион SG", "DNS answer")
+Rel(route53, spWaf, "2. Ближайший здоровый регион SA", "DNS answer")
+Rel(route53, jkWaf, "2. Индонезия -> Jakarta", "geolocation policy")
+
+Rel(sgWaf, sgApi, "3. Filtered traffic", "HTTPS")
+Rel(jkWaf, jkApi, "3. Filtered traffic", "HTTPS")
+Rel(spWaf, spApi, "3. Filtered traffic", "HTTPS")
+
+Rel(sgApi, sgIam, "4. Проверка/выдача токена", "OIDC/JWT")
+Rel(jkApi, jkIam, "4. Проверка/выдача токена", "OIDC/JWT")
+Rel(spApi, spIam, "4. Проверка/выдача токена", "OIDC/JWT")
+
+Rel(sgApi, sgServices, "5. Hot path только при совпадении home/trip region", "mTLS")
+Rel(jkApi, jkServices, "5. Hot path только при совпадении home/trip region", "mTLS")
+Rel(spApi, spServices, "5. Hot path только при совпадении home/trip region", "mTLS")
+
+Rel(sgIam, globalControl, "Синхронизация home region metadata", "Async/control API")
+Rel(jkIam, globalControl, "Синхронизация home region metadata", "Async/control API")
+Rel(spIam, globalControl, "Синхронизация home region metadata", "Async/control API")
+
+Rel(globalControl, route53, "<color:red>Health/failover policy updates</color>", "Automation")
+Rel(sgApi, globalControl, "Region mismatch check/redirect decision", "Control/read-only")
+Rel(jkApi, globalControl, "Region mismatch check/redirect decision", "Control/read-only")
+Rel(spApi, globalControl, "Region mismatch check/redirect decision", "Control/read-only")
+
+@enduml
